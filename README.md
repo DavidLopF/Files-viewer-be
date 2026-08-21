@@ -11,6 +11,12 @@ npm install
 npm start
 ```
 
+Para desarrollo, con reinicio automático ante cambios en `src/`:
+
+```bash
+npm run dev
+```
+
 El servidor arranca en `http://localhost:3000` sin necesidad de definir ninguna variable de entorno. Todos los valores de `src/config/index.js` tienen un default funcional; las variables de entorno (`PORT`, `TBX_BASE_URL`, `TBX_AUTH_TOKEN`, `TBX_TIMEOUT_MS`, `TBX_CONCURRENCY`, `TBX_CACHE_TTL_MS`, `TBX_VALIDATION_STRATEGY`) son overrides opcionales, nunca requisitos de arranque.
 
 ### Con Docker
