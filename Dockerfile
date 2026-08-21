@@ -1,7 +1,7 @@
 FROM node:14-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --production
 
 FROM node:14-alpine
 WORKDIR /app
