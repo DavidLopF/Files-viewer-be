@@ -185,10 +185,3 @@ Medidas contra el proveedor real (`echo-serv.tbxnet.com`, 9 archivos en el lista
 
 Con solo 9 archivos y un round-trip individual de ~0.2 s, la ganancia de la concurrencia 5 frente a la secuencial queda parcialmente enmascarada por los reintentos del proveedor (que añaden 300 ms–2 s de golpe a una request puntual, sin importar el modo). El efecto de la concurrencia se vuelve más determinante cuantos más archivos haya en el listado, porque el costo secuencial escala linealmente (`n × latencia`) mientras que el costo concurrente escala con `⌈n / 5⌉ × latencia`. Donde sí se ve un salto claro y estable es en la caché: pedir el mismo archivo dos veces dentro del TTL evita por completo la descarga y el parseo.
 
-## 7. Qué haría con más tiempo
-
-- Autenticación en el propio API (API keys o JWT) si fuera a exponerse fuera de un entorno de prueba.
-- Paginación en `/files/data` para catálogos grandes, en vez de devolver todo el array en una sola respuesta.
-- Streaming del CSV (parseo por chunks) en vez de cargar el archivo completo en memoria antes de parsearlo.
-- Métricas (latencia por endpoint, tasa de reintentos, hit rate de caché) expuestas en un endpoint `/metrics` compatible con Prometheus.
-- Pipeline de CI que corra `npm test`, `npm run lint` y `npm run coverage` en cada PR, y publique la imagen Docker.
