@@ -67,7 +67,7 @@ describe('retry', () => {
         thrown = error
       }
 
-      expect(thrown).to.exist
+      expect(thrown).to.be.an('error')
       expect(calls).to.equal(1)
     })
 
@@ -85,7 +85,7 @@ describe('retry', () => {
         thrown = error
       }
 
-      expect(thrown).to.exist
+      expect(thrown).to.be.an('error')
       expect(calls).to.equal(3)
     })
   })

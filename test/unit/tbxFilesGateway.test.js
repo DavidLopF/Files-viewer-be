@@ -10,11 +10,6 @@ const { UpstreamError } = require('../../src/shared/errors/AppError')
 describe('tbxFilesGateway', () => {
   const gateway = createTbxFilesGateway({ httpClient })
 
-  before(() => {
-    // Keep retry backoff negligible so the failure-path tests stay fast.
-    config.retry.baseDelayMs = 1
-  })
-
   afterEach(() => {
     nock.cleanAll()
   })
