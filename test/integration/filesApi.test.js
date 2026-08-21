@@ -128,6 +128,18 @@ describe('files API (integration)', () => {
     expect(response.body).to.deep.equal({ files: ['itg-list-a.csv', 'itg-list-b.csv'] })
   })
 
+  it('GET /files/list returns 502 UPSTREAM_ERROR when the provider fails', async () => {
+    nock(config.provider.baseUrl)
+      .get(config.provider.listPath)
+      .times(3)
+      .reply(500)
+
+    const response = await request(app).get('/files/list')
+
+    expect(response.status).to.equal(502)
+    expect(response.body.error.code).to.equal('UPSTREAM_ERROR')
+  })
+
   it('GET /health reports ok status and uptime', async () => {
     const response = await request(app).get('/health')
 
