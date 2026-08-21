@@ -85,10 +85,12 @@ flowchart LR
 
 - **Archivos vacíos vs. archivos que fallan.** Un archivo que se descarga correctamente pero no contiene ninguna línea válida se incluye en la respuesta con `lines: []`. Solo se omiten (y cuentan en `X-Skipped-Files`) los archivos cuya *descarga* falla. Son dos fallos semánticamente distintos: uno es "el proveedor no me dio el archivo", el otro es "el archivo no tenía datos útiles".
 - **Rigor de validación configurable.** `lineValidators` implementa dos estrategias con Strategy pattern: `strictColumnCount` (default, activa) exige exactamente 4 columnas sin ningún campo vacío — es la lectura literal del enunciado ("líneas que no tengan la cantidad de datos suficiente"). `strictTypes` además exige que `number` sea un entero y `hex` tenga 32 caracteres hexadecimales; está implementada y testeada pero desactivada por defecto, activable con `TBX_VALIDATION_STRATEGY=strictTypes`. Se dejó fuera por defecto porque el enunciado habla de "cantidad de datos", no de tipos, y activar tipado estricto por defecto descartaría silenciosamente filas que sí cumplen el contrato explícito.
-- **404 vs. array vacío.** Si `fileName` no está en el listado del proveedor, se responde `404 FILE_NOT_FOUND`: el cliente pidió algo que no existe, y devolver `200 []` ocultaría ese error. Si `fileName` existe pero su descarga falla, se responde `502 UPSTREAM_ERROR` — la omisión silenciosa del listado completo (`X-Skipped-Files`) no aplica aquí porque el cliente pidió ese archivo puntual.
+- **`fileName` es búsqueda por substring, no igualdad.** `fileName=report` matchea `Report-2024.csv`, comparación case-insensitive. Es una decisión de producto: el filtro por nombre en el frontend necesita comportarse como un buscador, no como una búsqueda exacta por clave primaria.
+- **404 vs. array vacío.** Si ningún archivo del listado del proveedor contiene `fileName` como substring, se responde `404 FILE_NOT_FOUND`: el cliente pidió una búsqueda que no encontró nada, y devolver `200 []` ocultaría esa distinción frente a "coincide pero no tiene líneas válidas". Si la búsqueda **coincide con un único archivo** y su descarga falla, se responde `502 UPSTREAM_ERROR` sin omisión silenciosa, porque en ese caso el cliente efectivamente pidió ese archivo puntual. Si coincide con **varios**, una descarga fallida individual no aborta la búsqueda: se omite igual que en el listado completo y se refleja en `X-Skipped-Files`, porque abortar toda una búsqueda por un solo archivo problemático sería peor experiencia que mostrar el resto.
 - **Orden preservado bajo concurrencia.** El pool de concurrencia (`concurrencyPool.js`) escribe cada resultado en un array pre-dimensionado, indexado por la posición original del archivo en el listado del proveedor. El orden de finalización de las promesas no afecta el orden del array de salida.
-- **`X-Skipped-Files` en el header, nunca en el body.** El contrato de `/files/data` es un array plano en la raíz; meter metadata ahí adentro (como `{ data: [...], skipped: n }`) rompería esa forma. CORS se configura con `exposedHeaders: ['X-Skipped-Files']` porque, por spec, el navegador solo expone 7 headers "simples" por defecto — sin este ajuste el frontend recibiría `undefined` al leer el header.
-- **Cache-aside por archivo, no por listado.** Se cachea el resultado ya parseado de cada archivo (TTL 60 s) porque el costo caro es la descarga + parseo, no el listado en sí. El listado (`GET /files/list` interno) se pide fresco en cada request: es una lista de nombres, barata, y cachearla introduciría una ventana en la que un archivo nuevo en el proveedor tardaría hasta 60 s en aparecer.
+- **`X-Skipped-Files` y `X-Skipped-File-Names` en headers, nunca en el body.** El contrato de `/files/data` es un array plano en la raíz; meter metadata ahí adentro (como `{ data: [...], skipped: n }`) rompería esa forma. `X-Skipped-File-Names` va serializado como JSON (`["test4.csv","test5.csv"]`, o `[]` si no hubo omisiones) porque un header es una sola cadena y un nombre de archivo del proveedor no está garantizado libre de comas — separar por coma habría sido ambiguo. CORS se configura con `exposedHeaders: ['X-Skipped-Files', 'X-Skipped-File-Names']` porque, por spec, el navegador solo expone 7 headers "simples" por defecto — sin este ajuste el frontend recibiría `undefined` al leerlos.
+- **Cache-aside por archivo, no por listado.** Se cachea el resultado ya parseado de cada archivo (TTL 60 s) porque el costo caro es la descarga + parseo. El listado del proveedor (interno, distinto de `GET /files/list`) se pide fresco en cada request: es una lista de nombres, barata, y cachearla introduciría una ventana en la que un archivo nuevo tardaría hasta 60 s en aparecer.
+- **`GET /files/list` devuelve disponibilidad real, no el catálogo crudo.** El catálogo del proveedor puede listar archivos que fallan sistemáticamente al descargar (el proveedor de prueba de este ejercicio tiene un par así). Devolver ese catálogo tal cual en `/files/list` — que el frontend usa para poblar un `<select>` de "cargar este archivo puntual" — le ofrece al usuario opciones garantizadas a fallar. `getAvailableFileNames` reutiliza el mismo pipeline de descarga con `skip` que `getFilesData` (mismo pool de concurrencia, mismo caché por archivo) y solo devuelve los nombres que efectivamente se pudieron descargar. Es más caro que devolver el catálogo crudo — para saber si un archivo está disponible no hay otra forma que intentar descargarlo — pero el caché compartido con `getFilesData` amortiza ese costo en requests subsiguientes.
 - **Bulkhead con límite 5, propio, sin `p-limit`.** `p-limit` v4+ es ESM-only y rompe en Node 14 con `require`. El pool propio (`concurrencyPool.js`) tiene ~25 líneas y usa el patrón de "carriles" (lanes): N workers async que van tomando el siguiente índice disponible hasta agotar la lista.
 - **Retry solo en fallos transitorios.** `retry.js` reintenta únicamente 5xx, timeouts y `ECONNRESET`/`ECONNABORTED`/`ETIMEDOUT` — nunca 4xx, porque un 4xx significa que la petición está mal formada y reintentarla solo repite el mismo error. 2 reintentos con backoff exponencial (`300ms × 2ⁿ` + jitter aleatorio) para no sincronizar reintentos en ráfaga contra un proveedor ya inestable.
 
@@ -96,7 +98,7 @@ flowchart LR
 
 ### `GET /files/data`
 
-Devuelve `200 application/json` con un array plano en la raíz. Los archivos que fallan al descargar se omiten (la respuesta sigue siendo `200`); el conteo de omitidos va en el header `X-Skipped-Files`.
+Devuelve `200 application/json` con un array plano en la raíz. Los archivos que fallan al descargar se omiten (la respuesta sigue siendo `200`); el conteo de omitidos va en el header `X-Skipped-Files` y sus nombres en `X-Skipped-File-Names` (JSON: `["test4.csv","test5.csv"]`, o `[]` si no hubo omisiones).
 
 ```
 GET /files/data
@@ -117,17 +119,20 @@ GET /files/data
 ]
 ```
 
-Headers de respuesta relevantes: `Content-Type: application/json`, `X-Skipped-Files: 1`, `Access-Control-Expose-Headers: X-Skipped-Files`.
+Headers de respuesta relevantes: `Content-Type: application/json`, `X-Skipped-Files: 1`, `X-Skipped-File-Names: ["test2.csv"]`, `Access-Control-Expose-Headers: X-Skipped-Files, X-Skipped-File-Names`.
 
-### `GET /files/data?fileName=test1.csv`
+### `GET /files/data?fileName=test1`
 
-Mismo formato, array con un único elemento.
+Mismo formato. `fileName` matchea por substring, case-insensitive, contra el listado del proveedor — no requiere el nombre completo ni la extensión. El array de respuesta trae un elemento por cada archivo cuyo nombre contiene ese texto.
 
-- `fileName` no existe en el listado del proveedor → `404 FILE_NOT_FOUND`.
-- `fileName` existe pero su descarga falla → `502 UPSTREAM_ERROR` (no se aplica omisión silenciosa).
+- Ningún archivo del listado contiene `fileName` → `404 FILE_NOT_FOUND`.
+- La búsqueda coincide con un único archivo y su descarga falla → `502 UPSTREAM_ERROR` (no se aplica omisión silenciosa).
+- La búsqueda coincide con varios archivos y alguno falla al descargar → se omite igual que en el listado completo, contabilizado en `X-Skipped-Files`.
 - `fileName` vacío o con formato inválido (path traversal, etc.) → `400 INVALID_QUERY`.
 
 ### `GET /files/list`
+
+Devuelve los archivos del catálogo que **realmente se pueden descargar** — no el catálogo crudo del proveedor. Un archivo que el proveedor lista pero cuya descarga falla de forma consistente no aparece acá, para que un cliente (como el `<select>` del frontend) nunca ofrezca una opción condenada a fallar.
 
 ```json
 { "files": ["test1.csv", "test2.csv"] }

@@ -7,7 +7,6 @@ const httpClient = require('./infrastructure/http/httpClient')
 const { createTbxFilesGateway } = require('./infrastructure/gateways/tbxFilesGateway')
 const InMemoryTtlCache = require('./infrastructure/cache/inMemoryTtlCache')
 const { createGetFilesData } = require('./application/getFilesData')
-const { createGetFilesList } = require('./application/getFilesList')
 const { createFilesController } = require('./interfaces/http/controllers/filesController')
 const { createFilesRouter } = require('./interfaces/http/routes/filesRoutes')
 const requestLogger = require('./interfaces/http/middlewares/requestLogger')
@@ -17,18 +16,17 @@ function buildApp () {
   const repo = createTbxFilesGateway({ httpClient })
   const cache = new InMemoryTtlCache(config.cache.ttlMs)
 
-  const getFilesData = createGetFilesData({
+  const { getFilesData, getAvailableFileNames } = createGetFilesData({
     repo,
     cache,
     concurrencyLimit: config.concurrency.limit,
     validationStrategy: config.validation.strategy
   })
-  const getFilesList = createGetFilesList({ repo })
-  const filesController = createFilesController({ getFilesData, getFilesList })
+  const filesController = createFilesController({ getFilesData, getAvailableFileNames })
 
   const app = express()
 
-  app.use(cors({ exposedHeaders: ['X-Skipped-Files'] }))
+  app.use(cors({ exposedHeaders: ['X-Skipped-Files', 'X-Skipped-File-Names'] }))
   app.use(requestLogger)
 
   app.get('/health', (req, res) => {

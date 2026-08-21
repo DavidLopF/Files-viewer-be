@@ -46,18 +46,20 @@ describe('files API (integration)', () => {
       }
     ])
     expect(response.headers['x-skipped-files']).to.equal('0')
+    expect(response.headers['x-skipped-file-names']).to.equal('[]')
   })
 
-  it('exposes X-Skipped-Files through CORS so browsers can read it', async () => {
+  it('exposes the skipped-files headers through CORS so browsers can read them', async () => {
     mockCatalog(['itg-cors.csv'])
     mockDownload('itg-cors.csv', TEST1_CSV)
 
     const response = await request(app).get('/files/data')
 
     expect(response.headers['access-control-expose-headers']).to.include('X-Skipped-Files')
+    expect(response.headers['access-control-expose-headers']).to.include('X-Skipped-File-Names')
   })
 
-  it('omits a file whose download fails but keeps the response at 200', async () => {
+  it('omits a file whose download fails but keeps the response at 200, naming it in the header', async () => {
     mockCatalog(['itg-ok.csv', 'itg-fail.csv'])
     mockDownload('itg-ok.csv', TEST1_CSV)
     mockDownloadFailure('itg-fail.csv')
@@ -67,6 +69,7 @@ describe('files API (integration)', () => {
     expect(response.status).to.equal(200)
     expect(response.body.map((f) => f.file)).to.deep.equal(['itg-ok.csv'])
     expect(response.headers['x-skipped-files']).to.equal('1')
+    expect(JSON.parse(response.headers['x-skipped-file-names'])).to.deep.equal(['itg-fail.csv'])
   })
 
   it('returns 502 UPSTREAM_ERROR when the provider catalog fails', async () => {
@@ -95,6 +98,17 @@ describe('files API (integration)', () => {
     expect(response.body.error.code).to.equal('FILE_NOT_FOUND')
   })
 
+  it('returns every file matching fileName as a case-insensitive substring', async () => {
+    mockCatalog(['itg-report-a.csv', 'itg-report-b.csv', 'itg-other.csv'])
+    mockDownload('itg-report-a.csv', TEST1_CSV)
+    mockDownload('itg-report-b.csv', TEST1_CSV)
+
+    const response = await request(app).get('/files/data?fileName=REPORT')
+
+    expect(response.status).to.equal(200)
+    expect(response.body.map((f) => f.file)).to.deep.equal(['itg-report-a.csv', 'itg-report-b.csv'])
+  })
+
   it('returns 502 UPSTREAM_ERROR when the requested fileName fails to download', async () => {
     mockCatalog(['itg-baddl.csv'])
     mockDownloadFailure('itg-baddl.csv')
@@ -119,13 +133,26 @@ describe('files API (integration)', () => {
     expect(response.body.error.code).to.equal('INVALID_QUERY')
   })
 
-  it('GET /files/list returns the raw catalog', async () => {
+  it('GET /files/list returns every catalog file that downloads successfully', async () => {
     mockCatalog(['itg-list-a.csv', 'itg-list-b.csv'])
+    mockDownload('itg-list-a.csv', TEST1_CSV)
+    mockDownload('itg-list-b.csv', TEST1_CSV)
 
     const response = await request(app).get('/files/list')
 
     expect(response.status).to.equal(200)
     expect(response.body).to.deep.equal({ files: ['itg-list-a.csv', 'itg-list-b.csv'] })
+  })
+
+  it('GET /files/list omits a catalog file whose download fails', async () => {
+    mockCatalog(['itg-list-ok.csv', 'itg-list-broken.csv'])
+    mockDownload('itg-list-ok.csv', TEST1_CSV)
+    mockDownloadFailure('itg-list-broken.csv')
+
+    const response = await request(app).get('/files/list')
+
+    expect(response.status).to.equal(200)
+    expect(response.body).to.deep.equal({ files: ['itg-list-ok.csv'] })
   })
 
   it('GET /files/list returns 502 UPSTREAM_ERROR when the provider fails', async () => {

@@ -19,14 +19,28 @@ const { FileNotFoundError } = require('../shared/errors/AppError')
  */
 
 /**
- * Builds the getFilesData use case: lists the provider's catalog, downloads
- * each file through a bounded concurrency pool, parses and validates its
- * lines, and returns them in catalog order. A failed download never aborts
- * the batch: in full-listing mode it is counted as skipped, in single-file
- * mode it is rethrown so the caller can see the failure.
+ * Builds the files use cases that share a download+parse+cache pipeline:
+ * `getFilesData` lists the provider's catalog, downloads each file through
+ * a bounded concurrency pool, parses and validates its lines, and returns
+ * them in catalog order. `fileName` is matched as a case-insensitive
+ * substring against the catalog, not an exact name, so it behaves as a
+ * search rather than a single-file lookup; no match is a 404. A failed
+ * download never aborts the batch, except when the search narrows to
+ * exactly one file: there, the caller asked for that file specifically, so
+ * the failure is rethrown instead of being silently skipped.
+ *
+ * `getAvailableFileNames` reuses the same pipeline to report only the
+ * catalog entries that actually download successfully. The provider's
+ * catalog can list files that are permanently broken on its end; nothing
+ * short of attempting the download reveals that, so this pays the same
+ * cost as a full listing, offset by the per-file cache both use cases
+ * share.
  *
  * @param {{ repo: FilesRepository, cache: { get: (key: string) => *, set: (key: string, value: *) => void }, concurrencyLimit: number, validationStrategy: string }} deps
- * @returns {(options?: { fileName?: string }) => Promise<{ files: FileData[], skippedCount: number }>}
+ * @returns {{
+ *   getFilesData: (options?: { fileName?: string }) => Promise<{ files: FileData[], skippedCount: number, skippedFileNames: string[] }>,
+ *   getAvailableFileNames: () => Promise<string[]>
+ * }}
  */
 function createGetFilesData ({ repo, cache, concurrencyLimit, validationStrategy }) {
   const isValidLine = getValidator(validationStrategy)
@@ -44,31 +58,51 @@ function createGetFilesData ({ repo, cache, concurrencyLimit, validationStrategy
     return fileData
   }
 
-  return async function getFilesData ({ fileName } = {}) {
-    const catalog = await repo.listFiles()
-
-    if (fileName) {
-      if (!catalog.includes(fileName)) {
-        throw new FileNotFoundError(fileName)
-      }
-      const fileData = await fetchFileData(fileName)
-      return { files: [fileData], skippedCount: 0 }
-    }
-
-    const settled = await runWithConcurrency(catalog, concurrencyLimit, fetchFileData)
+  async function downloadWithSkips (fileNames) {
+    const settled = await runWithConcurrency(fileNames, concurrencyLimit, fetchFileData)
 
     const files = []
-    let skippedCount = 0
-    for (const result of settled) {
+    const skippedFileNames = []
+    settled.forEach((result, index) => {
       if (result.status === 'fulfilled') {
         files.push(result.value)
       } else {
-        skippedCount++
+        skippedFileNames.push(fileNames[index])
       }
+    })
+
+    return { files, skippedCount: skippedFileNames.length, skippedFileNames }
+  }
+
+  async function getFilesData ({ fileName } = {}) {
+    const catalog = await repo.listFiles()
+
+    if (fileName) {
+      const needle = fileName.toLowerCase()
+      const matches = catalog.filter((name) => name.toLowerCase().includes(needle))
+
+      if (matches.length === 0) {
+        throw new FileNotFoundError(fileName)
+      }
+
+      if (matches.length === 1) {
+        const fileData = await fetchFileData(matches[0])
+        return { files: [fileData], skippedCount: 0, skippedFileNames: [] }
+      }
+
+      return downloadWithSkips(matches)
     }
 
-    return { files, skippedCount }
+    return downloadWithSkips(catalog)
   }
+
+  async function getAvailableFileNames () {
+    const catalog = await repo.listFiles()
+    const { files } = await downloadWithSkips(catalog)
+    return files.map((fileData) => fileData.file)
+  }
+
+  return { getFilesData, getAvailableFileNames }
 }
 
 module.exports = { createGetFilesData }
